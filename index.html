@@ -1,0 +1,455 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, 
+  collection, 
+  addDoc, 
+  onSnapshot, 
+  query, 
+  doc, 
+  deleteDoc 
+} from 'firebase/firestore';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  signInWithCustomToken,
+  onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  User, 
+  Users, 
+  School, 
+  BarChart3, 
+  List, 
+  PlusCircle, 
+  Trash2, 
+  ClipboardCheck,
+  PieChart,
+  Download
+} from 'lucide-react';
+
+// --- Firebase 初始化 ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+const TEMPLES = ["圓明", "正淵", "正新", "正湛", "正敦", "正忞", "正東", "正槿", "正顯", "正立", "正毓", "正暘", "正祺", "正岳", "正賓"];
+const CLASSES = ["新民班", "至善班", "培德班", "行德班", "崇德班", "講培班"];
+const GENDERS = ["乾道", "坤道"];
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [registrations, setRegistrations] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [formData, setFormData] = useState({
+    name: '',
+    temple: '',
+    gender: '',
+    studyClass: ''
+  });
+  const [activeTab, setActiveTab] = useState('register');
+
+  // 1. 初始化身分驗證
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Auth initialization failed:", error);
+      }
+    };
+    initAuth();
+    
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // 2. 監聽資料庫
+  useEffect(() => {
+    if (!user) return;
+
+    const registrationsRef = collection(db, 'artifacts', appId, 'public', 'data', 'registrations');
+    
+    const unsubscribe = onSnapshot(
+      registrationsRef, 
+      (snapshot) => {
+        const data = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+        setRegistrations(data);
+        setLoading(false);
+      }, 
+      (error) => {
+        console.error("Firestore Fetch Error:", error);
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [user]);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!user) return;
+    if (!formData.name || !formData.temple || !formData.gender) {
+      return;
+    }
+
+    try {
+      const registrationsRef = collection(db, 'artifacts', appId, 'public', 'data', 'registrations');
+      await addDoc(registrationsRef, {
+        ...formData,
+        userId: user.uid,
+        createdAt: new Date().toISOString()
+      });
+      setFormData({ name: '', temple: '', gender: '', studyClass: '' });
+      setActiveTab('list');
+    } catch (error) {
+      console.error("Submit error:", error);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!user) return;
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'registrations', id);
+      await deleteDoc(docRef);
+    } catch (error) {
+      console.error("Delete error:", error);
+    }
+  };
+
+  // 下載 CSV 功能
+  const exportToCSV = () => {
+    if (registrations.length === 0) return;
+    
+    const headers = ["姓名", "性別", "所屬公壇", "研究班", "報名時間"];
+    const rows = registrations.map(reg => [
+      reg.name,
+      reg.gender,
+      reg.temple,
+      reg.studyClass || "無",
+      new Date(reg.createdAt).toLocaleString()
+    ]);
+
+    // 加入 BOM 避免 Excel 中文亂碼
+    const csvContent = "\uFEFF" + [
+      headers.join(","),
+      ...rows.map(row => row.map(cell => `"${cell}"`).join(","))
+    ].join("\n");
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `十大觀音活動報名名單_${new Date().toLocaleDateString()}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // 統計邏輯
+  const stats = useMemo(() => {
+    const templeCounts = {};
+    const classCounts = { "無": 0 };
+    const genderCounts = { "乾道": 0, "坤道": 0 };
+
+    registrations.forEach(r => {
+      if (r.temple) templeCounts[r.temple] = (templeCounts[r.temple] || 0) + 1;
+      
+      if (r.studyClass) {
+        classCounts[r.studyClass] = (classCounts[r.studyClass] || 0) + 1;
+      } else {
+        classCounts["無"] = (classCounts["無"] || 0) + 1;
+      }
+      
+      if (r.gender) genderCounts[r.gender] = (genderCounts[r.gender] || 0) + 1;
+    });
+
+    return { templeCounts, classCounts, genderCounts };
+  }, [registrations]);
+
+  if (loading && !user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <div className="text-teal-600 font-semibold animate-pulse">系統連線中...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans">
+      <nav className="bg-white border-b sticky top-0 z-10">
+        <div className="max-w-4xl mx-auto px-4">
+          <div className="flex justify-between items-center h-16">
+            <h1 className="text-xl font-bold text-teal-700 flex items-center gap-2">
+              <ClipboardCheck className="w-6 h-6" />
+              十大觀音活動報名系統
+            </h1>
+            <div className="flex gap-2 text-sm md:text-base">
+              <button 
+                onClick={() => setActiveTab('register')}
+                className={`flex items-center gap-1 px-2 py-1.5 md:px-3 rounded-lg transition-all ${activeTab === 'register' ? 'bg-teal-100 text-teal-700 font-semibold' : 'hover:bg-gray-100'}`}
+              >
+                <PlusCircle className="w-4 h-4" /> 報名
+              </button>
+              <button 
+                onClick={() => setActiveTab('list')}
+                className={`flex items-center gap-1 px-2 py-1.5 md:px-3 rounded-lg transition-all ${activeTab === 'list' ? 'bg-teal-100 text-teal-700 font-semibold' : 'hover:bg-gray-100'}`}
+              >
+                <List className="w-4 h-4" /> 名單
+              </button>
+              <button 
+                onClick={() => setActiveTab('stats')}
+                className={`flex items-center gap-1 px-2 py-1.5 md:px-3 rounded-lg transition-all ${activeTab === 'stats' ? 'bg-teal-100 text-teal-700 font-semibold' : 'hover:bg-gray-100'}`}
+              >
+                <BarChart3 className="w-4 h-4" /> 統計
+              </button>
+            </div>
+          </div>
+        </div>
+      </nav>
+
+      <main className="max-w-4xl mx-auto p-4 md:p-8">
+        {activeTab === 'register' && (
+          <div className="bg-white shadow-xl rounded-2xl overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="bg-teal-600 p-6 text-white text-center md:text-left">
+              <h2 className="text-2xl font-bold">活動報名表單</h2>
+              <p className="opacity-90">請填寫以下資訊完成報名程序</p>
+            </div>
+            <form onSubmit={handleSubmit} className="p-6 md:p-8 space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-semibold mb-2 flex items-center gap-2">
+                    <User className="w-4 h-4 text-teal-600" /> 姓名
+                  </label>
+                  <input 
+                    type="text"
+                    required
+                    value={formData.name}
+                    onChange={(e) => setFormData({...formData, name: e.target.value})}
+                    placeholder="請輸入姓名"
+                    className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-teal-500 outline-none transition-all"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold mb-2 flex items-center gap-2">
+                    <Users className="w-4 h-4 text-teal-600" /> 性別
+                  </label>
+                  <div className="flex gap-6 mt-2">
+                    {GENDERS.map(g => (
+                      <label key={g} className="flex items-center gap-2 cursor-pointer group">
+                        <input 
+                          type="radio" 
+                          name="gender" 
+                          value={g}
+                          checked={formData.gender === g}
+                          onChange={(e) => setFormData({...formData, gender: e.target.value})}
+                          className="w-4 h-4 text-teal-600"
+                        />
+                        <span className="group-hover:text-teal-600 transition-colors font-medium">{g}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-semibold mb-2 flex items-center gap-2">
+                    <School className="w-4 h-4 text-teal-600" /> 所屬公壇
+                  </label>
+                  <select 
+                    required
+                    value={formData.temple}
+                    onChange={(e) => setFormData({...formData, temple: e.target.value})}
+                    className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-teal-500 outline-none bg-white"
+                  >
+                    <option value="">請選擇公壇</option>
+                    {TEMPLES.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold mb-2 flex items-center gap-2">
+                    <School className="w-4 h-4 text-teal-600" /> 所屬研究班 <span className="text-slate-400 font-normal text-xs">(選填)</span>
+                  </label>
+                  <select 
+                    value={formData.studyClass}
+                    onChange={(e) => setFormData({...formData, studyClass: e.target.value})}
+                    className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-teal-500 outline-none bg-white"
+                  >
+                    <option value="">無</option>
+                    {CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              <button 
+                type="submit"
+                disabled={!user}
+                className={`w-full text-white font-bold py-3 px-6 rounded-xl transition-all shadow-lg ${!user ? 'bg-slate-400 cursor-not-allowed' : 'bg-teal-600 hover:bg-teal-700 hover:shadow-teal-200'}`}
+              >
+                {!user ? "系統連線中..." : "提交報名資料"}
+              </button>
+            </form>
+          </div>
+        )}
+
+        {activeTab === 'list' && (
+          <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-bold flex items-center gap-2">
+                <List className="text-teal-600" /> 報名名單
+                <span className="bg-teal-100 text-teal-700 text-sm px-2 py-1 rounded-full">{registrations.length} 人</span>
+              </h2>
+              <button 
+                onClick={exportToCSV}
+                disabled={registrations.length === 0}
+                className="flex items-center gap-2 bg-white border border-slate-200 px-3 py-1.5 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-50 hover:text-teal-600 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Download className="w-4 h-4" /> 下載試算表 (CSV)
+              </button>
+            </div>
+            
+            <div className="bg-white rounded-xl shadow overflow-x-auto border">
+              <table className="w-full text-left min-w-[500px]">
+                <thead className="bg-slate-50 border-b text-slate-500 text-xs uppercase tracking-wider">
+                  <tr>
+                    <th className="px-6 py-4 font-semibold">姓名</th>
+                    <th className="px-6 py-4 font-semibold text-center">性別</th>
+                    <th className="px-6 py-4 font-semibold">所屬公壇</th>
+                    <th className="px-6 py-4 font-semibold">研究班</th>
+                    <th className="px-6 py-4 font-semibold text-right">操作</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {registrations.length === 0 ? (
+                    <tr>
+                      <td colSpan="5" className="px-6 py-12 text-center text-slate-400 italic">目前尚無報名資料</td>
+                    </tr>
+                  ) : (
+                    registrations.sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt)).map((reg) => (
+                      <tr key={reg.id} className="hover:bg-slate-50 transition-colors group">
+                        <td className="px-6 py-4 font-medium text-slate-800">{reg.name}</td>
+                        <td className="px-6 py-4 text-center">
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${reg.gender === '乾道' ? 'bg-blue-100 text-blue-700' : 'bg-pink-100 text-pink-700'}`}>
+                            {reg.gender}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 text-slate-600 text-sm">{reg.temple}</td>
+                        <td className="px-6 py-4 text-slate-600 text-sm">{reg.studyClass || <span className="text-slate-300">無</span>}</td>
+                        <td className="px-6 py-4 text-right">
+                          <button 
+                            onClick={() => handleDelete(reg.id)}
+                            title="刪除"
+                            className="text-slate-300 hover:text-red-500 p-1.5 rounded-full hover:bg-red-50 transition-all opacity-0 group-hover:opacity-100"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'stats' && (
+          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-bold flex items-center gap-2">
+                <PieChart className="text-teal-600" /> 報名數據統計
+              </h2>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 md:gap-6">
+              <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex flex-col items-center sm:items-start">
+                <p className="text-slate-500 text-xs font-semibold uppercase tracking-wider">總報名人數</p>
+                <p className="text-4xl font-bold text-teal-600 mt-1">{registrations.length}</p>
+              </div>
+              <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex flex-col items-center sm:items-start">
+                <p className="text-slate-500 text-xs font-semibold uppercase tracking-wider">乾道人數</p>
+                <p className="text-4xl font-bold text-blue-600 mt-1">{stats.genderCounts["乾道"]}</p>
+              </div>
+              <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex flex-col items-center sm:items-start">
+                <p className="text-slate-500 text-xs font-semibold uppercase tracking-wider">坤道人數</p>
+                <p className="text-4xl font-bold text-pink-600 mt-1">{stats.genderCounts["坤道"]}</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              <div className="bg-white p-6 rounded-2xl shadow-sm border">
+                <div className="flex justify-between items-center mb-6 pb-2 border-b">
+                  <h3 className="font-bold text-slate-700">公壇分佈情況</h3>
+                  <span className="text-slate-400 text-xs font-normal">單位: 人</span>
+                </div>
+                <div className="space-y-4">
+                  {TEMPLES.map(temple => {
+                    const count = stats.templeCounts[temple] || 0;
+                    const percentage = registrations.length > 0 ? (count / registrations.length * 100) : 0;
+                    return (
+                      <div key={temple}>
+                        <div className="flex justify-between text-xs mb-1.5 font-medium">
+                          <span className={count > 0 ? "text-slate-800" : "text-slate-400"}>{temple}</span>
+                          <span className={count > 0 ? "text-teal-600" : "text-slate-300"}>{count}</span>
+                        </div>
+                        <div className="w-full bg-slate-50 h-2 rounded-full overflow-hidden">
+                          <div 
+                            className="bg-teal-500 h-full transition-all duration-700 ease-out shadow-sm" 
+                            style={{ width: `${percentage}%` }}
+                          ></div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="bg-white p-6 rounded-2xl shadow-sm border">
+                <div className="flex justify-between items-center mb-6 pb-2 border-b">
+                  <h3 className="font-bold text-slate-700">研究班級佔比</h3>
+                  <span className="text-slate-400 text-xs font-normal">單位: 人</span>
+                </div>
+                <div className="space-y-6 mt-4">
+                  {[...CLASSES, "無"].map(studyClass => {
+                    const count = stats.classCounts[studyClass] || 0;
+                    const percentage = registrations.length > 0 ? (count / registrations.length * 100) : 0;
+                    return (
+                      <div key={studyClass}>
+                        <div className="flex justify-between text-sm mb-2">
+                          <span className={`font-bold ${count > 0 ? "text-indigo-900" : "text-slate-400"}`}>{studyClass}</span>
+                          <span className="font-black text-indigo-600">{count}</span>
+                        </div>
+                        <div className="w-full bg-slate-50 h-3 rounded-full overflow-hidden border border-slate-100">
+                          <div 
+                            className={`h-full transition-all duration-1000 ease-in-out ${studyClass === "無" ? "bg-slate-300" : "bg-indigo-500"}`}
+                            style={{ width: `${percentage}%` }}
+                          ></div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+
+      <footer className="bg-white border-t mt-12 py-8 text-center text-slate-400 text-xs md:text-sm">
+        <p>© 2024 十大觀音活動報名系統 - 智慧弘法 · 方便法門</p>
+      </footer>
+    </div>
+  );
+}
